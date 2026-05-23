@@ -1,4 +1,3 @@
-
 import sys
 import os
 import json
@@ -7,6 +6,20 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
 from sqlalchemy import types
+from sqlalchemy import text
+
+# funzione per caricare i dati a blocchi 
+def insert_ignore(df, table_name, engine, chunksize=10000):
+    columns = ", ".join(df.columns)
+    placeholders = ", ".join([f":{col}" for col in df.columns])
+    query = text(f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})")
+    
+    # dividiamo il dataframe in blocchi per non saturare la memoria
+    with engine.begin() as connection:
+        for i in range(0, len(df), chunksize):
+            chunk = df.iloc[i:i + chunksize]
+            data = chunk.to_dict(orient='records')
+            connection.execute(query, data)
 
 def genera_custom_flow_id(src_ip, dst_ip, src_port, dst_port, protocol):
     # generiamo un ID univoco basato sulla 5-tupla e usiamo l'MD5 per creare una stringa fissa di 32 caratteri.
@@ -174,20 +187,15 @@ def main():
     df_finale.replace([np.inf, -np.inf], np.nan, inplace=True)
     colonne_numeriche = df_finale.select_dtypes(include=[np.number]).columns
     df_finale[colonne_numeriche] = df_finale[colonne_numeriche].fillna(0)
+    colonne_testo = df_finale.select_dtypes(include=['object', 'string']).columns
+    df_finale[colonne_testo] = df_finale[colonne_testo].fillna(np.nan).replace({np.nan: None})
 
     # assicuriamoci che la colonna data sia gestita correttamente come tipo datetime in Pandas
     df_finale['timestamp_start'] = pd.to_datetime(df_finale['timestamp_start'])
 
     print(f"Inizio caricamento bulk di {len(df_finale)} flussi nella tabella 'ndpi_flows'...")
     try:
-        df_finale.to_sql(
-            name='ndpi_flows', 
-            con=engine, 
-            if_exists='append', 
-            index=False, 
-            dtype={'timestamp_start': types.DateTime()},
-            chunksize=10000
-        )
+        insert_ignore(df_finale, 'ndpi_flows', engine, chunksize=20000)
         print("Db popolato con successo!")
     except Exception as e:
         print(f"[ERRORE] Durante l'importazione dei dati di ndpiReader: {e}")
