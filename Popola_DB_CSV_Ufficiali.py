@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import types
 
 def main():
-    if len(sys.argv) < 2:
+    if len(sys.argv) != 2:
         print("Uso: py Popola_DB_CSV_Ufficiali.py <nome_file.csv>")
         return
 
