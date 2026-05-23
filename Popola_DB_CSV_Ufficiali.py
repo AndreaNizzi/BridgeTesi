@@ -4,7 +4,20 @@ import os
 import numpy as np
 import hashlib
 from sqlalchemy import create_engine
-from sqlalchemy import types
+from sqlalchemy import text
+
+# funzione per caricare i dati a blocchi 
+def insert_ignore(df, table_name, engine, chunksize=10000):
+    columns = ", ".join(df.columns)
+    placeholders = ", ".join([f":{col}" for col in df.columns])
+    query = text(f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})")
+    
+    # dividiamo il dataframe in blocchi per non saturare la memoria
+    with engine.begin() as connection:
+        for i in range(0, len(df), chunksize):
+            chunk = df.iloc[i:i + chunksize]
+            data = chunk.to_dict(orient='records')
+            connection.execute(query, data)
 
 def main():
     if len(sys.argv) != 2:
@@ -109,14 +122,7 @@ def main():
     print(f"Inizio caricamento bulk di {len(df_finale)} flussi nella tabella 'cic_flows'...")
     
     try:
-        df_finale.to_sql(
-            name='cic_flows', 
-            con=engine, 
-            if_exists='append', 
-            index=False, 
-            dtype={'timestamp_start': types.DateTime()},
-            chunksize=10000
-        )
+        insert_ignore(df_finale, 'cic_flows', engine, chunksize=20000)
         print("Db popolato con successo!")
     except Exception as e:
         print(f"[ERRORE] Durante l'importazione dei dati di CIC: {e}")
