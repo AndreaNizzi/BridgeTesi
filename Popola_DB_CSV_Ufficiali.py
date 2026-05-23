@@ -9,9 +9,14 @@ from sqlalchemy import types
 def main():
     if len(sys.argv) != 2:
         print("Uso: py Popola_DB_CSV_Ufficiali.py <nome_file.csv>")
-        return
+        sys.exit(1)
 
     csv_file = sys.argv[1]
+    
+    print(f"Lettura del file {csv_file} in corso...")
+    if not os.path.exists(csv_file):
+        print(f"[ERRORE] Il file '{csv_file}' non esiste.")
+        sys.exit(1)  
     
     # configurazione db
     db_user = 'root'
@@ -22,11 +27,6 @@ def main():
     print("Connessione al database MySQL...")
     engine = create_engine(f'mysql+pymysql://{db_user}:{db_pass}@{db_host}/{db_name}')
 
-    print(f"Lettura del file {csv_file} in corso...")
-    if not os.path.exists(csv_file):
-        print(f"[ERRORE] Il file '{csv_file}' non esiste.")
-        return  
-    
     try:
         df = pd.read_csv(
             csv_file, 
@@ -119,7 +119,7 @@ def main():
         )
         print("Db popolato con successo!")
     except Exception as e:
-        print(f"[ERRORE] Durante l'importazione CIC: {e}")
+        print(f"[ERRORE] Durante l'importazione dei dati di CIC: {e}")
 
 if __name__ == "__main__":
     main()
