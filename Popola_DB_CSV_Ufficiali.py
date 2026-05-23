@@ -41,21 +41,21 @@ def main():
 
     # mappatura CSV -> db
     mappa_colonne = {
-        'Source IP': 'src_ip',
-        'Destination IP': 'dst_ip',
-        'Source Port': 'src_port',
-        'Destination Port': 'dst_port',
+        'Src IP': 'src_ip',
+        'Dst IP': 'dst_ip',
+        'Src Port': 'src_port',
+        'Dst Port': 'dst_port',
         'Protocol': 'protocol',
         'Timestamp': 'timestamp_start',
         'Flow Duration': 'duration_ms',
-        'Flow Bytes/s': 'byte_rate',
-        'Flow Packets/s': 'packet_rate',
+        'Flow Byts/s': 'byte_rate',
+        'Flow Pkts/s': 'packet_rate',
         'Flow IAT Mean': 'iat_flow_avg',
         'Flow IAT Std': 'iat_flow_stddev',
-        'Total Fwd Packets': 'fwd_packets',
-        'Total Backward Packets': 'bwd_packets',
-        'Total Length of Fwd Packets': 'total_fwd_bytes',
-        'Total Length of Bwd Packets': 'total_bwd_bytes',
+        'Tot Fwd Pkts': 'fwd_packets',
+        'Tot Bwd Pkts': 'bwd_packets',
+        'TotLen Fwd Pkts': 'total_fwd_bytes',
+        'TotLen Bwd Pkts': 'total_bwd_bytes',
         'Label': 'label'
     }
 
@@ -65,7 +65,7 @@ def main():
     df['total_bytes'] = df['total_fwd_bytes'].astype(float) + df['total_bwd_bytes']
 
     print("Conversione dei timestamp in formato DATETIME ISO...")
-    df['timestamp_start'] = pd.to_datetime(df['timestamp_start'], errors='coerce')
+    df['timestamp_start'] = pd.to_datetime(df['timestamp_start'], format='%d/%m/%Y %I:%M:%S %p', errors='coerce')
     df['timestamp_start'] = df['timestamp_start'].fillna(pd.Timestamp.now())
 
     # standardizziamo i campi della 5-tupla per garantire la compatibilità delle stringhe
