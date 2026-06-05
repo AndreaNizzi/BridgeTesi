@@ -7,6 +7,7 @@ import numpy as np
 from sqlalchemy import create_engine
 from sqlalchemy import types
 from sqlalchemy import text
+from datetime import datetime
 
 # funzione per caricare i dati a blocchi 
 def insert_ignore(df, table_name, engine, chunksize=10000):
@@ -61,12 +62,14 @@ def main():
                 dati = json.loads(linea_pulita)
 
                 ndpi_obj = dati.get('ndpi', {})
+
                 contiene_entropia_sospetta = 0
-                
                 flow_risk = ndpi_obj.get('flow_risk', {})
-                for _, risk_info in flow_risk.items():
-                    if risk_info.get('risk') == 'Susp Entropy':
-                        contiene_entropia_sospetta = 1  # flag a 1 se l'entropia è anomala
+
+                if isinstance(flow_risk, dict):
+                    for _, risk_info in flow_risk.items():
+                        if isinstance(risk_info, dict) and risk_info.get('risk') == 'Susp Entropy':
+                            contiene_entropia_sospetta = 1      # flag a 1 se l'entropia è anomala
 
                 src_ip = dati.get('src_ip')
                 dst_ip = dati.get('dest_ip') 
@@ -90,18 +93,23 @@ def main():
                 # assicuriamoci che le porte siano numeri interi puliti 
                 try:
                     src_port_clean = int(float(src_port))
-                    dst_port_clean = int(float(dst_port))
                 except:
                     src_port_clean = 0
+                    
+                try:
+                    dst_port_clean = int(float(dst_port))
+                except:
                     dst_port_clean = 0
 
                 # convertiamo i timestamp in formato DATETIME ISO
                 first_seen_epoch = dati.get('first_seen')
                 if first_seen_epoch:
-                    timestamp_obj = pd.to_datetime(first_seen_epoch, unit='s', errors='coerce')
-                    timestamp_iso = timestamp_obj.strftime('%Y-%m-%d %H:%M:%S') if pd.notnull(timestamp_obj) else pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                    try:
+                        timestamp_iso = datetime.fromtimestamp(float(first_seen_epoch)).strftime('%Y-%m-%d %H:%M:%S')
+                    except:
+                        timestamp_iso = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 else:
-                    timestamp_iso = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+                    timestamp_iso = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
                 # generiamo del flow_id 
                 flow_id_custom = genera_custom_flow_id(src_ip, dst_ip, src_port_clean, dst_port_clean, protocol)
@@ -109,16 +117,17 @@ def main():
                 xfer_obj = dati.get('xfer', {})
                 iat_obj = dati.get('iat', {})
                 tls_obj = ndpi_obj.get('tls', {})
+                tcp_flags_obj = dati.get('tcp_flags', {})
 
                 # calcoliamo bitmap dei flags TCP
-                fin = int(dati.get('fin', 0))
-                syn = int(dati.get('syn', 0))
-                rst = int(dati.get('rst', 0))
-                psh = int(dati.get('psh', 0))
-                ack = int(dati.get('ack', 0))
-                urg = int(dati.get('urg', 0))
-                ece = int(dati.get('ece', 0))
-                cwr = int(dati.get('cwr', 0))
+                fin = 1 if tcp_flags_obj.get('fin_count', 0) > 0 else 0
+                syn = 1 if tcp_flags_obj.get('syn_count', 0) > 0 else 0
+                rst = 1 if tcp_flags_obj.get('rst_count', 0) > 0 else 0
+                psh = 1 if tcp_flags_obj.get('psh_count', 0) > 0 else 0
+                ack = 1 if tcp_flags_obj.get('ack_count', 0) > 0 else 0
+                urg = 1 if tcp_flags_obj.get('urg_count', 0) > 0 else 0
+                ece = 1 if tcp_flags_obj.get('ece_count', 0) > 0 else 0
+                cwr = 1 if tcp_flags_obj.get('cwr_count', 0) > 0 else 0
                 
                 # bitwise standard di rete
                 tcp_flags_bitmap = (fin * 1 + syn * 2 + rst * 4 + psh * 8 + ack * 16 + urg * 32 + ece * 64 + cwr * 128)
@@ -159,7 +168,7 @@ def main():
                     'tcp_flags': tcp_flags_bitmap,
                     'ndpi_hostname': ndpi_obj.get('hostname', ''),
                     'payload_entropy': contiene_entropia_sospetta,
-                    'app_hierarchy': ndpi_obj.get('proto_stack', dati.get('proto_stack', '')),
+                    'app_hierarchy': ndpi_obj.get('proto', dati.get('proto', '')),
                     'infra_provider': ndpi_obj.get('proto_by_ip', ''),
                     'tls_version': tls_obj.get('version') if tls_obj else None,
                     'tls_cipher_suite': tls_obj.get('cipher') if tls_obj else None,
