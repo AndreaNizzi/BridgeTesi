@@ -66,10 +66,12 @@ def main():
                 contiene_entropia_sospetta = 0
                 flow_risk = ndpi_obj.get('flow_risk', {})
 
-                if isinstance(flow_risk, dict):
+                if isinstance(flow_risk, dict) and flow_risk:
                     for _, risk_info in flow_risk.items():
-                        if isinstance(risk_info, dict) and risk_info.get('risk') == 'Susp Entropy':
-                            contiene_entropia_sospetta = 1      # flag a 1 se l'entropia è anomala
+                        if isinstance(risk_info, dict):
+                            risk_name = risk_info.get('risk', '')
+                            if risk_name == 'Susp Entropy':
+                                contiene_entropia_sospetta = 1      # flag a 1 se l'entropia è anomala
 
                 src_ip = dati.get('src_ip')
                 dst_ip = dati.get('dest_ip') 
@@ -189,16 +191,24 @@ def main():
         return
     
     print(f"Rimozione flussi duplicati nel DataFrame... Righe iniziali: {len(df_finale)}")
+    
+    if 'payload_entropy' in df_finale.columns:
+        df_finale.sort_values(by='payload_entropy', ascending=False, inplace=True)
+
     df_finale.drop_duplicates(subset=['flow_id'], keep='first', inplace=True)
+    df_finale.reset_index(drop=True, inplace=True)
     print(f"Righe residue dopo la rimozione duplicati: {len(df_finale)}")
 
     print("Pulizia del dataset: rimozione dei valori infiniti (inf) e NaN...")
     df_finale.replace([np.inf, -np.inf], np.nan, inplace=True)
-    colonne_numeriche = df_finale.select_dtypes(include=[np.number]).columns
+    
+    colonne_numeriche = [col for col in df_finale.select_dtypes(include=[np.number]).columns if col != 'payload_entropy']
     df_finale[colonne_numeriche] = df_finale[colonne_numeriche].fillna(0)
     colonne_testo = df_finale.select_dtypes(include=['object', 'string']).columns
     df_finale[colonne_testo] = df_finale[colonne_testo].fillna(np.nan).replace({np.nan: None})
 
+    df_finale['payload_entropy'] = pd.to_numeric(df_finale['payload_entropy'], errors='coerce').fillna(0).astype('int64')
+    
     # assicuriamoci che la colonna data sia gestita correttamente come tipo datetime in Pandas
     df_finale['timestamp_start'] = pd.to_datetime(df_finale['timestamp_start'])
 
