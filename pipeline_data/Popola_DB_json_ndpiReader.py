@@ -186,7 +186,7 @@ def main():
                         'dst_port': dst_port_clean,
                         'protocol': protocol,
                         'timestamp_start': dt_oggetto,
-                        'duration_ms': int(duration_ms),
+                        'duration_ms': duration_ms,
                         'total_bytes': total_bytes,
                         'fwd_packets': fwd_pkts,
                         'bwd_packets': bwd_pkts,
