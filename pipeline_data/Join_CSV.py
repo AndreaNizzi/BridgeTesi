@@ -94,7 +94,7 @@ def parse_timestamp_column(df, colname, tz="Europe/Rome"):
 
 def main():
     if len(sys.argv) != 4:
-        print("Uso: python join_flows.py <file_miei.csv> <file_ufficiali.csv> <output.csv>")
+        print("Uso: python join_CSV.py <file_miei.csv> <file_ufficiali.csv> <output.csv>")
         sys.exit(1)
 
     path_miei, path_off, path_out = sys.argv[1], sys.argv[2], sys.argv[3]
