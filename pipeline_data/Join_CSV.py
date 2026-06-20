@@ -1,16 +1,17 @@
 import sys
 import pandas as pd
+import numpy as np
 from ipaddress import ip_address
-import communityid  
+import communityid
 
-# Inizializziamo il generatore Community ID
+pd.set_option("future.no_silent_downcasting", True)
+
 CID = communityid.CommunityID()
 
+# ---------------------------
+# COMMUNITY ID
+# ---------------------------
 def calc_community_id(sip, dip, sport, dport, proto):
-    """
-    Calcoliamo il Community ID per un flusso di rete.
-    Gestendo le inversioni natie della libreria per i flussi bidirezionali.
-    """
     try:
         src_ip = ip_address(str(sip).strip())
         dst_ip = ip_address(str(dip).strip())
@@ -34,197 +35,212 @@ def calc_community_id(sip, dip, sport, dport, proto):
     except Exception:
         return "error"
 
+
+# ---------------------------
+# COL DETECTION
+# ---------------------------
 def auto_detect_columns(columns):
-    """Rileviamo automaticamente i nomi delle colonne cruciali basandosi su keyword."""
     cols = {}
     for c in columns:
         cl = str(c).lower().strip()
-        if ('src' in cl or 'source' in cl) and 'ip' in cl: cols['src'] = c
-        elif ('dst' in cl or 'dest' in cl) and 'ip' in cl: cols['dst'] = c
-        elif ('src' in cl or 'source' in cl) and 'port' in cl: cols['sp'] = c
-        elif ('dst' in cl or 'dest' in cl) and 'port' in cl: cols['dp'] = c
-        elif 'protocol' in cl or cl == 'proto': cols['pr'] = c
-        elif 'label' in cl or 'class' in cl: cols['label'] = c
-        elif 'timestamp' in cl: cols['ts'] = c
-        elif 'flow duration' in cl or cl == 'duration': cols['dur'] = c
+        if 'id' in cl and ('src' in cl or 'dst' in cl or 'flow' in cl):
+            continue
+        
+        if ('src' in cl or 'source' in cl) and 'ip' in cl:
+            cols['src'] = c
+        elif ('dst' in cl or 'dest' in cl) and 'ip' in cl:
+            cols['dst'] = c
+        elif ('src' in cl or 'source' in cl) and 'port' in cl:
+            cols['sp'] = c
+        elif ('dst' in cl or 'dest' in cl) and 'port' in cl:
+            cols['dp'] = c
+        elif 'protocol' in cl or cl == 'proto':
+            cols['pr'] = c
+        elif 'timestamp' in cl:
+            cols['ts'] = c
     return cols
 
+
+# ---------------------------
+# PROTOCOL + PORTS
+# ---------------------------
 def normalize_proto(series):
-    """Mappiamo i protocolli testuali nei rispettivi ID numerici in formato stringa."""
     proto_map = {"TCP": "6", "UDP": "17", "ICMP": "1", "ICMPV6": "58"}
     s = series.astype(str).str.strip().str.upper().replace(proto_map)
     return pd.to_numeric(s, errors="coerce").astype("Int64").astype(str)
 
+
 def prepare_ports(df, sp_col, dp_col):
-    """Normalizziamo le porte convertendole in stringhe pulite."""
     df["s_port"] = pd.to_numeric(df[sp_col], errors="coerce").astype("Int64").astype(str)
     df["d_port"] = pd.to_numeric(df[dp_col], errors="coerce").astype("Int64").astype(str)
     return df
 
-def build_community_ids(df, cols_map):
-    """Generiamo la colonna Community_ID per l'intero dataframe."""
+
+def build_community_ids(df, cols):
     df["Community_ID"] = [
-        calc_community_id(sip, dip, sport, dport, proto)
-        for sip, dip, sport, dport, proto in zip(
-            df[cols_map["src"]],
-            df[cols_map["dst"]],
+        calc_community_id(sip, dip, sp, dp, pr)
+        for sip, dip, sp, dp, pr in zip(
+            df[cols["src"]],
+            df[cols["dst"]],
             df["s_port"],
             df["d_port"],
-            df["proto_clean"],
+            df["proto_clean"]
         )
     ]
     return df
 
-def parse_timestamp_column(df, colname, tz="Europe/Rome"):
-    """Parsiamo in modo robusto i timestamp forzando i formati noti per evitare inversioni mese/giorno."""
-    # Proviamo prima il formato 12h con AM/PM (miei file)
-    ts = pd.to_datetime(df[colname], format='%d/%m/%Y %I:%M:%S %p', errors="coerce")
-    # Se fallisce o restituisce NaT, proviamo il formato 24h (file ufficiali)
-    if ts.isna().all():
-        ts = pd.to_datetime(df[colname], format='%d/%m/%Y %H:%M:%S', errors='coerce')
-    # Fallback generico se nessuno dei formati ha funzionato
-    if ts.isna().all():
-        ts = pd.to_datetime(df[colname], dayfirst=True, errors='coerce')
 
-    if getattr(ts.dt, "tz", None) is None:
-        ts = ts.dt.tz_localize(tz, nonexistent="shift_forward", ambiguous="NaT")
-    else:
-        ts = ts.dt.tz_convert(tz)
-    return ts
+# ---------------------------
+# TIMESTAMP PARSING
+# ---------------------------
+def robust_timestamp_parsing(series):
+    s = series.astype(str).str.strip().str.replace(r'\s+', ' ', regex=True)
+    res = pd.to_datetime(pd.Series(np.nan, index=series.index))
+    
+    mask_pm = s.str.contains('AM|PM|am|pm', na=False)
+    if mask_pm.any():
+        res.loc[mask_pm] = pd.to_datetime(s.loc[mask_pm], format='%d/%m/%Y %I:%M:%S %p', errors='coerce')
+        still_na = res.isna() & mask_pm
+        if still_na.any():
+            res.loc[still_na] = pd.to_datetime(s.loc[still_na], format='%d/%m/%Y %I:%M %p', errors='coerce')
 
+    mask_24h = ~mask_pm
+    if mask_24h.any():
+        res.loc[mask_24h] = pd.to_datetime(s.loc[mask_24h], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+        still_na_24h = res.isna() & mask_24h
+        if still_na_24h.any():
+            res.loc[still_na_24h] = pd.to_datetime(s.loc[still_na_24h], format='%d/%m/%Y %H:%M', errors='coerce')
+
+    if res.isna().any():
+        res = res.fillna(pd.to_datetime(s, errors='coerce', format='mixed', dayfirst=True))
+
+    return res
+
+
+# ---------------------------
+# MAIN
+# ---------------------------
 def main():
     if len(sys.argv) != 4:
-        print("Uso: python join_CSV.py <file_miei.csv> <file_ufficiali.csv> <output.csv>")
+        print("Uso: python join_CSV.py <pcap_miei.csv> <definitivo_uff.csv> <out.csv>")
         sys.exit(1)
 
-    path_miei, path_off, path_out = sys.argv[1], sys.argv[2], sys.argv[3]
+    path_miei, path_off, path_out = sys.argv[1:]
 
-    print(f"[INFO] Caricamento {path_miei} (I tuoi dati)...")
+    print("[INFO] Caricamento dati...")
     df_miei = pd.read_csv(path_miei, low_memory=False)
+    df_uff = pd.read_csv(path_off, encoding="cp1252", low_memory=False)
 
-    print(f"[INFO] Caricamento {path_off} (Dati ufficiali)...")
-    df_ufficiale = pd.read_csv(path_off, encoding='cp1252', low_memory=False)
-
-    # Puliamo spazi bianchi dagli header
     df_miei.columns = df_miei.columns.str.strip()
-    df_ufficiale.columns = df_ufficiale.columns.str.strip()
+    df_uff.columns = df_uff.columns.str.strip()
 
-    # Mapping automatico delle colonne indispensabili
     miei_cols = auto_detect_columns(df_miei.columns)
-    off_cols = auto_detect_columns(df_ufficiale.columns)
+    off_cols = auto_detect_columns(df_uff.columns)
 
-    # Verifichiamo la presenza delle colonne minime obbligatorie
     required = ['src', 'dst', 'sp', 'dp', 'pr', 'ts']
-    for req in required:
-        if req not in miei_cols:
-            print(f"[ERRORE] Mappatura fallita per la colonna {req} nei tuoi dati.")
-            sys.exit(1)
-        if req not in off_cols:
-            print(f"[ERRORE] Mappatura fallita per la colonna {req} nei dati ufficiali.")
+    for r in required:
+        if r not in miei_cols or r not in off_cols:
+            print(f"[ERROR] Colonna mancante nel mapping: {r}")
             sys.exit(1)
 
-    # Normalizzaziamo Protocollo e Rimuoviamo righe con valori nulli nei campi chiave
+    df_miei.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df_uff.replace([np.inf, -np.inf], np.nan, inplace=True)
+
     df_miei["proto_clean"] = normalize_proto(df_miei[miei_cols["pr"]])
-    df_ufficiale["proto_clean"] = normalize_proto(df_ufficiale[off_cols["pr"]])
+    df_uff["proto_clean"] = normalize_proto(df_uff[off_cols["pr"]])
 
-    df_miei = df_miei.dropna(subset=[miei_cols["src"], miei_cols["dst"], miei_cols["sp"], miei_cols["dp"], miei_cols["ts"]])
-    df_ufficiale = df_ufficiale.dropna(subset=[off_cols["src"], off_cols["dst"], off_cols["sp"], off_cols["dp"], off_cols["ts"]])
-
-    # Normalizziamo porte
     df_miei = prepare_ports(df_miei, miei_cols["sp"], miei_cols["dp"])
-    df_ufficiale = prepare_ports(df_ufficiale, off_cols["sp"], off_cols["dp"])
+    df_uff = prepare_ports(df_uff, off_cols["sp"], off_cols["dp"])
 
-    # Calcoliamo i Community ID
-    print("[INFO] Generazione Community ID per i tuoi dati...")
+    print("[INFO] Parsing dei timestamp...")
+    df_miei["ts"] = robust_timestamp_parsing(df_miei[miei_cols["ts"]])
+    df_uff["ts"] = robust_timestamp_parsing(df_uff[off_cols["ts"]])
+
+    df_miei = df_miei[df_miei["ts"].notna()].copy()
+    df_uff = df_uff[df_uff["ts"].notna()].copy()
+
+    print("[INFO] Generazione Community ID...")
     df_miei = build_community_ids(df_miei, miei_cols)
+    df_uff = build_community_ids(df_uff, off_cols)
 
-    print("[INFO] Generazione Community ID per i dati ufficiali...")
-    df_ufficiale = build_community_ids(df_ufficiale, off_cols)
+    df_miei = df_miei[df_miei["Community_ID"].ne("error")].copy()
+    df_uff = df_uff[df_uff["Community_ID"].ne("error")].copy()
 
-    # Filtriamo gli errori di hashing
-    df_miei = df_miei[df_miei["Community_ID"] != "error"].copy()
-    df_ufficiale = df_ufficiale[df_ufficiale["Community_ID"] != "error"].copy()
+    common = set(df_miei["Community_ID"]) & set(df_uff["Community_ID"])
+    print(f"[INFO] Community ID unici in comune: {len(common)}")
 
-    actual_label_col = off_cols.get("label", "Label")
-    if actual_label_col not in df_ufficiale.columns:
-        print("[ERRORE] Colonna Label non trovata nei dati ufficiali.")
+    if len(common) == 0:
+        print("[ERROR] Nessun Community ID comune trovato.")
         sys.exit(1)
 
-    # Parsing dei Timestamp
-    tz = "Europe/Rome"
-    df_miei["ts_parsed"] = parse_timestamp_column(df_miei, miei_cols["ts"], tz)
-    df_ufficiale["ts_parsed"] = parse_timestamp_column(df_ufficiale, off_cols["ts"], tz)
+    # -----------------------
+    # TIME ALIGNMENT
+    # -----------------------
+    print("[INFO] Sincronizzazione del fuso orario (-5 ore dal PCAP)...")
 
-    print("[INFO] Calcolo dell'offset temporale in corso...")
-    sample = pd.merge(
-        df_miei[["Community_ID", "ts_parsed"]],
-        df_ufficiale[["Community_ID", "ts_parsed"]],
-        on="Community_ID",
-        how="inner"
-    ).dropna()
-
-    if not sample.empty:
-        delta = (sample["ts_parsed_y"] - sample["ts_parsed_x"]).median()
-        print(f"[INFO] Offset calcolato automaticamente: {delta}")
-    else:
-        delta = pd.Timedelta(hours=0)
-        print(f"[ATTENZIONE] Impossibile stimare l'offset (zero match). Fallback a {delta}")
-
-    # Allineamo i tempi al secondo
-    df_ufficiale["ts_align"] = (df_ufficiale["ts_parsed"] - delta).dt.floor("S")
-    df_miei["ts_align"] = df_miei["ts_parsed"].dt.floor("S")
-
-    # Chiavi di Join
-    join_left_keys = ["Community_ID", "ts_align"]
-    join_right_keys = ["Community_ID", "ts_align"]
-
-    # Disambiguazione con la durata del flusso
-    if "dur" in miei_cols and "dur" in off_cols:
-        df_miei["dur_s"] = pd.to_numeric(df_miei[miei_cols["dur"]], errors="coerce").round().astype("Int64")
-        df_ufficiale["dur_s"] = pd.to_numeric(df_ufficiale[off_cols["dur"]], errors="coerce").round().astype("Int64")
-        #join_left_keys.append("dur_s")
-        #join_right_keys.append("dur_s")
-
-    print("[INFO] Esecuzione del merge finale...")
-    # Seleziamo solo le chiavi e la colonna Label dal df ufficiale per evitare duplicati di colonne di metriche
-    df_ufficiale_sub = df_ufficiale[join_right_keys + [actual_label_col]].copy()
+    # Portiamo indietro di 5 ore l'orario di df_miei per ottenere l'orario lavorativo reale (9 AM - 5 PM)
+    delta_fuso = pd.Timedelta(hours=5)
     
-    # Rinominiamo la label ufficiale direttamente prima del merge per pulizia
-    if actual_label_col != "Label":
-        df_ufficiale_sub.rename(columns={actual_label_col: "Label"}, inplace=True)
+    df_miei["ts_match"] = df_miei["ts"] - delta_fuso
+    
+    # Per il file definitivo (df_uff), normalizziamo i pomeriggio 
+    mask_pomeriggio_uff = df_uff["ts"].dt.hour < 8
+    if mask_pomeriggio_uff.any():
+        df_uff.loc[mask_pomeriggio_uff, "ts"] = df_uff.loc[mask_pomeriggio_uff, "ts"] + pd.Timedelta(hours=12)
+    
+    df_uff["ts_match"] = df_uff["ts"]
 
-    df_finale = pd.merge(
+    # -----------------------
+    # DURATION EXTRACTION
+    # -----------------------
+    duration_col_off = next((c for c in df_uff.columns if "duration" in c.lower()), None)
+    duration_col_miei = next((c for c in df_miei.columns if "duration" in c.lower()), None)
+
+    df_miei["duration_norm"] = pd.to_numeric(df_miei[duration_col_miei], errors="coerce")
+    df_uff["duration_norm"] = pd.to_numeric(df_uff[duration_col_off], errors="coerce")
+
+    # -----------------------
+    # MERGE FINAL
+    # -----------------------
+    print("[INFO] Allineamento temporale...")
+    df_miei["ts_match"] = pd.to_datetime(df_miei["ts_match"], errors="coerce").dt.as_unit("ns")
+    df_uff["ts_match"] = pd.to_datetime(df_uff["ts_match"], errors="coerce").dt.as_unit("ns")
+
+    df_miei = df_miei.sort_values("ts_match").copy()
+    df_uff = df_uff.sort_values("ts_match").copy()
+
+    label_col_off = next((c for c in df_uff.columns if "label" in c.lower() or "class" in c.lower()), "Label")
+
+    print("[INFO] Accoppiamento dei flussi...")
+    df_final = pd.merge_asof(
         df_miei,
-        df_ufficiale_sub,
-        left_on=join_left_keys,
-        right_on=join_right_keys,
-        how="left",
-        validate="m:1"  # Un flusso nei tuoi dati corrisponde ad un solo record ufficiale allineato temporalmente
+        df_uff[["Community_ID", "ts_match", "duration_norm", label_col_off]],
+        on="ts_match",
+        by="Community_ID",
+        direction="nearest",
+        tolerance=pd.Timedelta(seconds=15),
+        suffixes=('', '_off')
     )
 
-    # Puliamo le colonne di join duplicate nate dal merge
-    for c in join_right_keys:
-        if f"{c}_y" in df_finale.columns:
-            df_finale.drop(columns=[f"{c}_y"], inplace=True)
-        if f"{c}_x" in df_finale.columns:
-            df_finale.rename(columns={f"{c}_x": c}, inplace=True)
+    # -------------------------------------------------------------
+    # SOVRASCRIVIAMO LA COLONNA TIMESTAMP ORIGINALE
+    # -------------------------------------------------------------
+    
+    df_final[miei_cols["ts"]] = pd.to_datetime(df_final["ts_match"]).dt.strftime('%d/%m/%Y %I:%M:%S %p')
+    
+    # Rimuoviamo la colonna di servizio temporanea
+    df_final.drop(columns=["Orario_Reale_AM_PM"], errors="ignore", inplace=True)
 
-    # Puliamo e normalizziamo i valori nulli o "No Label" nella colonna finale
-    df_finale["Label"] = (
-        df_finale["Label"]
-        .astype("string")
-        .replace(["No Label", "", "nan", "None", "NaN"], "Unknown")
-        .fillna("Unknown")
-    )
+    final_label_col = f"{label_col_off}_off" if f"{label_col_off}_off" in df_final.columns else label_col_off
+    df_final["Label"] = df_final[final_label_col].astype(str)
 
-    cols_to_drop = ["proto_clean", "s_port", "d_port", "Community_ID", "ts_parsed", "ts_align", "dur_s"]
-    df_finale.drop(columns=cols_to_drop, inplace=True, errors="ignore")
+    print("[INFO] Salvataggio dei dati...")
+    df_final.to_csv(path_out, index=False)
 
-    print(f"[INFO] Salvataggio del file finale in {path_out}...")
-    df_finale.to_csv(path_out, index=False)
+    print(f"\n[SUCCESS] TOTALE RECORD GENERATI: {len(df_final)}")
+    print("\nDISTRIBUZIONE DELLE ETICHETTE:")
+    print(df_final["Label"].value_counts(dropna=False).head(20))
 
-    print("\n[INFO] Matching Completato con successo! Distribuzione delle Label:")
-    print(df_finale["Label"].value_counts(dropna=False))
 
 if __name__ == "__main__":
     main()
