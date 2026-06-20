@@ -4,81 +4,38 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import create_engine
 from sqlalchemy import text
-from communityid import CommunityID, FlowTuple
 
-# Inizializziamo il generatore Community ID standard
-cid = CommunityID()
-
-# funzione per caricare i dati a blocchi 
-def insert(df, table_name, engine, chunksize=10000):
+# -------------------------------------------------------------
+# FUNZIONE DI INSERIMENTO IN BULK 
+# -------------------------------------------------------------
+def insert(df, table_name, engine, chunksize=20000):
     columns = ", ".join([f"`{col}`" for col in df.columns])
     placeholders = ", ".join([f":{col}" for col in df.columns])
     query = text(f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})")
     
-    # dividiamo il dataframe in blocchi per non saturare la memoria
     with engine.begin() as connection:
         for i in range(0, len(df), chunksize):
             chunk = df.iloc[i:i + chunksize]
             data = chunk.to_dict(orient='records')
+            
+            for row in data:
+                for key, val in row.items():
+                    if isinstance(val, float) and (np.isnan(val) or np.isinf(val)):
+                        row[key] = 0.0
+                    elif val is pd.NaT:
+                        row[key] = None
+                        
             connection.execute(query, data)
 
-def genera_community_id(src_ip, dst_ip, src_port, dst_port, protocol):
-    """
-    Generiamo il Community ID standard usando la libreria ufficiale.
-    Garantisce la bi-direzionalità automatica indipendentemente dall'ordine dei pacchetti.
-    """
-    try:
-        s_ip = str(src_ip).strip()
-        d_ip = str(dst_ip).strip()
-        sp = int(float(src_port))
-        dp = int(float(dst_port))
-        p = int(float(protocol))
-        
-        # Creiamo l'oggetto FlowTuple 
-        flow = FlowTuple(p, s_ip, d_ip, sp, dp)
-        # Calcoliamo il Community ID 
-        return cid.calc(flow)
-    except Exception:
-        return None
-
-def parse_cic_timestamp_iso(series):
-    """
-    Parser specifico per i timestamp del dataset CIC. 
-    Gestisce i formati a 12 ore privi dell'indicatore AM/PM.
-    """
-    s = series.astype(str).str.strip()
-    
-    res = pd.to_datetime(s, format='%d/%m/%Y %H:%M:%S', errors='coerce')
-    mask = res.isna()
-    if mask.any():
-        res.loc[mask] = pd.to_datetime(s.loc[mask], format='%d/%m/%Y %H:%M', errors='coerce')
-    
-    mask_ancora_na = res.isna()
-    if mask_ancora_na.any():
-        res.loc[mask_ancora_na] = pd.to_datetime(s.loc[mask_ancora_na], errors='coerce', dayfirst=True)
-
-    # Algorittmo di riconoscimento del pomeriggio
-    ore_grezze = res.dt.hour
-
-    # Se l'ora è tra 1 e 5 (pomeriggio), sommiamo 12 ore per portarla a 13-17.
-    pomeriggio_attivato = (ore_grezze >= 1) & (ore_grezze <= 5)
-    
-    res.loc[pomeriggio_attivato] = res.loc[pomeriggio_attivato] + pd.to_timedelta('12 hours')
-    
-    return res
-
 def main():
-
-    # Definiamo la lista dei file puliti generati nella pipeline precedente
     files_da_elaborare = [
-        'Lunedi-Pulito-Definitivo.csv',
-        'Martedi-Pulito-Definitivo.csv',
-        'Mercoledi-Pulito-Definitivo.csv',
-        'Giovedi-Pulito-Definitivo.csv',
-        'Venerdi-Pulito-Definitivo.csv'
+        'Lunedi-Join.csv',  
+        'Martedi-Join.csv',
+        'Mercoledi-Join.csv',
+        'Giovedi-Join.csv',
+        'Venerdi-Join.csv'
     ]
     
-    # Configurazione db
     db_user = 'root'
     db_pass = 'b/GKS07-sh&6'  
     db_host = 'localhost'
@@ -87,76 +44,54 @@ def main():
     print("Connessione al database MySQL...")
     engine = create_engine(f'mysql+pymysql://{db_user}:{db_pass}@{db_host}/{db_name}')
 
-    # Iteriamo in modo automatico su ogni file della lista
     for csv_file in files_da_elaborare:
         print("\n" + "="*50)
-        print(f"INIZIO ELABORAZIONE AUTOMATICA: {csv_file}")
+        print(f"Caricamento database: {csv_file}")
         print("="*50)
         
         if not os.path.exists(csv_file):
-            print(f"[ERRORE] Il file '{csv_file}' non esiste nella cartella corrente.")
-            sys.exit(1) 
+            print(f"[INFO] Il file '{csv_file}' non è presente nella cartella. Lo salto.")
+            continue
         
-        print(f"Lettura di {csv_file} in corso...")
+        print(f"Lettura di {csv_file}...")
         try:
             df = pd.read_csv(csv_file, low_memory=False, on_bad_lines='skip')
-            # Rimuoviamo spazi bianchi dai nomi delle colonne
-            df.columns = df.columns.str.strip()
+            df.columns = df.columns.str.strip().str.lower()
+            df = df.loc[:, ~df.columns.duplicated()].copy()
         except Exception as e:
             print(f"[ERRORE] Durante la lettura di {csv_file}: {e}")
             sys.exit(1)
 
-        # Mappatura CSV -> db (Resta invariata rispetto al tuo codice)
         mappa_colonne = {
-            'Source IP': 'src_ip',        
-            'Destination IP': 'dst_ip',   
-            'Source Port': 'src_port',
-            'Destination Port': 'dst_port',
-            'Protocol': 'protocol',
-            'Timestamp': 'timestamp_start',
-            'Flow Duration': 'duration_ms',
-            'Flow Bytes/s': 'byte_rate', 
-            'Flow Packets/s': 'packet_rate',
-            'Flow IAT Mean': 'iat_flow_avg',
-            'Flow IAT Std': 'iat_flow_stddev',
-            'Total Fwd Packets': 'fwd_packets',
-            'Total Backward Packets': 'bwd_packets',
-            'Total Length of Fwd Packets': 'total_fwd_bytes',
-            'Total Length of Bwd Packets': 'total_bwd_bytes',
-            'Label': 'label'
+            'community_id': 'community_id',
+            'src ip': 'src_ip',        
+            'dst ip': 'dst_ip',   
+            'src port': 'src_port',
+            'dst port': 'dst_port',
+            'protocol': 'protocol',
+            'ts': 'timestamp_start',       
+            'duration_norm': 'duration_ms', 
+            'flow byts/s': 'byte_rate', 
+            'flow pkts/s': 'packet_rate',
+            'flow iat mean': 'iat_flow_avg',
+            'flow iat std': 'iat_flow_stddev',
+            'tot fwd pkts': 'fwd_packets',
+            'tot bwd pkts': 'bwd_packets',
+            'totlen fwd pkts': 'total_fwd_bytes',  
+            'totlen bwd pkts': 'total_bwd_bytes',
+            'label_off': 'label'
         }
 
-        # Rinominiamo le colonne nel DataFrame 
         colonne_presenti = {k: v for k, v in mappa_colonne.items() if k in df.columns}
         df.rename(columns=colonne_presenti, inplace=True)
-        print(f"[DEBUG COLONNE] Colonne effettive nel DF dopo il rename: {list(df.columns)}")
+        df = df.loc[:, ~df.columns.duplicated()].copy()
 
-        if 'timestamp_start' in df.columns:
-            df['timestamp_start'] = parse_cic_timestamp_iso(df['timestamp_start'])
-            df.sort_values(by='timestamp_start', inplace=True, ignore_index=True)
+        # Se ci sono colonne duplicate con lo stesso nome dopo il rename, teniamo l'ultima 
+        df = df.loc[:, ~df.columns.duplicated(keep='last')].copy()
 
-        df['duration_ms'] = (pd.to_numeric(df['duration_ms'], errors='coerce').fillna(0) / 1000).astype(int)
-        df['total_fwd_bytes'] = pd.to_numeric(df['total_fwd_bytes'], errors='coerce').fillna(0)
-        df['total_bwd_bytes'] = pd.to_numeric(df['total_bwd_bytes'], errors='coerce').fillna(0)
-        df['total_bytes'] = df['total_fwd_bytes'] + df['total_bwd_bytes']
+        if 'label' not in df.columns and 'label_off' not in df.columns:
+            pass 
 
-        # Standardizziamo i campi della 5-tupla per il Community ID
-        df['src_port'] = pd.to_numeric(df['src_port'], errors='coerce').fillna(0).astype(int)
-        df['dst_port'] = pd.to_numeric(df['dst_port'], errors='coerce').fillna(0).astype(int)
-        df['protocol'] = pd.to_numeric(df['protocol'], errors='coerce').fillna(0).astype(int)
-
-        print("[INFO] Generazione Community ID per i dati ufficiali...")
-        df['community_id'] = [
-            genera_community_id(src, dst, sp, dp, pr)
-            for src, dst, sp, dp, pr in zip(
-                df['src_ip'], df['dst_ip'], df['src_port'], df['dst_port'], df['protocol']
-            )
-        ]
-
-        # Rimuoviamo i flussi dove il calcolo del community_id è fallito 
-        df = df.dropna(subset=['community_id'])
-
-        # Selezioniamo i campi destinazione mappati nel db
         colonne_db_target = [
             'community_id', 'src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol', 
             'timestamp_start', 'duration_ms', 'total_bytes', 'fwd_packets', 
@@ -164,36 +99,86 @@ def main():
             'byte_rate', 'iat_flow_avg', 'iat_flow_stddev', 'label'
         ]
 
-        colonne_da_caricare = [c for c in colonne_db_target if c in df.columns]
-        df_finale = df[colonne_da_caricare].copy()
+        # Creiamo il DataFrame finale includendo solo le colonne target
+        df_finale = df[[c for c in colonne_db_target if c in df.columns]].copy()
 
-        print("Pulizia del dataset: rimozione dei valori infiniti (inf) e NaN...")
-        df_finale.replace([np.inf, -np.inf], np.nan, inplace=True)
+        # -----------------------------------------------------------------
+        # CORREZIONE TIMESTAMPS
+        # -----------------------------------------------------------------
+        print("[INFO] Validazione e correzione dei Timestamp...")
+        # Convertiamo in stringa e puliamo
+        df_finale['timestamp_start'] = df_finale['timestamp_start'].astype(str).str.strip()
+        
+        # Eliminiamo i valori '-1' o sporchi sovrascrivendoli temporaneamente con NaN
+        df_finale['timestamp_start'] = df_finale['timestamp_start'].replace({'-1': np.nan, 'nan': np.nan, 'None': np.nan, '': np.nan})
+        
+        if 'community_id' in df_finale.columns:
+            maschera_corrotti = df_finale['timestamp_start'].isna()
+            backup_dates = pd.to_datetime(df_finale['community_id'], errors='coerce')
+            df_finale.loc[maschera_corrotti, 'timestamp_start'] = backup_dates.loc[maschera_corrotti]
 
-        colonne_numeriche = df_finale.select_dtypes(include=[np.number]).columns
-        df_finale[colonne_numeriche] = df_finale[colonne_numeriche].fillna(0)
-
+        # Convertiamo tutto a Datetime standard 
         df_finale['timestamp_start'] = pd.to_datetime(df_finale['timestamp_start'], errors='coerce')
-        df_finale['timestamp_start'] = df_finale['timestamp_start'].fillna(pd.Timestamp.now())
-        df_finale['timestamp_start'] = df_finale['timestamp_start'].dt.tz_localize(None)
         
-        colonne_testo = df_finale.select_dtypes(include=['object', 'string']).columns
-        colonne_testo = [c for c in colonne_testo if c != 'timestamp_start']
-        df_finale[colonne_testo] = df_finale[colonne_testo].fillna(np.nan).replace({np.nan: None})
-        
-        # Convertiamo la colonna nel formato ISO string esatto 'YYYY-MM-DD HH:MM:SS.ffffff'
+        # Per i record senza data, mettiamo l'ora di inizio standard del dataset (08:55)
+        data_default = pd.Timestamp('2017-07-03 08:55:00')
+        df_finale['timestamp_start'] = df_finale['timestamp_start'].fillna(data_default)
+
+        # Sottraiamo le 5 ore di sfasamento (13:58 -> 08:58)
+        df_finale['timestamp_start'] = df_finale['timestamp_start'] - pd.Timedelta(hours=5)
+
+        # Ordiniamo cronologicamente e convertiamo nel formato stringa per MySQL
+        df_finale.sort_values(by='timestamp_start', inplace=True, ignore_index=True)
         df_finale['timestamp_start'] = df_finale['timestamp_start'].dt.strftime('%Y-%m-%d %H:%M:%S.%f')
 
-        print(f"Campi pronti al push: {list(df_finale.columns)}")
-        print(f"Inizio caricamento bulk di {len(df_finale)} flussi nella tabella 'cic_flows'...")
-        
+        # -----------------------------------------------------------------
+        # CONVERSIONI NUMERICHE 
+        # -----------------------------------------------------------------
+        if 'duration_ms' in df_finale.columns:
+            df_finale['duration_ms'] = pd.to_numeric(df_finale['duration_ms'], errors='coerce').fillna(0).astype(int)
+            df_finale.loc[df_finale['duration_ms'] < 0, 'duration_ms'] = 0
+
+        fwd_b = pd.to_numeric(df_finale['total_fwd_bytes'], errors='coerce').fillna(0) if 'total_fwd_bytes' in df_finale.columns else 0
+        bwd_b = pd.to_numeric(df_finale['total_bwd_bytes'], errors='coerce').fillna(0) if 'total_bwd_bytes' in df_finale.columns else 0
+        df_finale['total_bytes'] = (fwd_b + bwd_b).astype(int)
+
+        for col_5t in ['src_port', 'dst_port', 'protocol', 'fwd_packets', 'bwd_packets']:
+            if col_5t in df_finale.columns:
+                df_finale[col_5t] = pd.to_numeric(df_finale[col_5t], errors='coerce').fillna(0).astype(int)
+                df_finale.loc[df_finale[col_5t] < 0, col_5t] = 0
+
+        colonne_numeriche_sicure = ['packet_rate', 'byte_rate', 'iat_flow_avg', 'iat_flow_stddev', 'total_fwd_bytes', 'total_bwd_bytes']
+        for col_num in colonne_numeriche_sicure:
+            if col_num in df_finale.columns:
+                df_finale[col_num] = pd.to_numeric(df_finale[col_num], errors='coerce').fillna(0.0)
+                df_finale.loc[df_finale[col_num] < 0, col_num] = 0.0
+
+        df_finale.replace([np.inf, -np.inf], np.nan, inplace=True)
+        colonne_num_finali = df_finale.select_dtypes(include=[np.number]).columns
+        df_finale[colonne_num_finali] = df_finale[colonne_num_finali].fillna(0.0)
+
+        # -----------------------------------------------------------------
+        # NORMALIZZAZIONE DELLA LABEL
+        # -----------------------------------------------------------------
+        colonne_testo = ['community_id', 'src_ip', 'dst_ip', 'label']
+        for col in colonne_testo:
+            if col in df_finale.columns:
+                df_finale[col] = df_finale[col].astype(str).str.strip()
+
+        if 'label' in df_finale.columns:
+            df_finale['label'] = df_finale['label'].replace({
+                '0': 'BENIGN', '0.0': 'BENIGN', 'nan': 'BENIGN', 'None': 'BENIGN', '': 'BENIGN'
+            })
+            df_finale['label'] = df_finale['label'].fillna('BENIGN')
+
+        print(f"Inizio caricamento bulk di {len(df_finale)} flussi uniti nella tabella 'cic_flows'...")
         try:
             insert(df_finale, 'cic_flows', engine, chunksize=20000)
-            print(f"{csv_file} caricato nel DB con successo!")
+            print(f"[INFO] {csv_file} importato con successo!")
         except Exception as e:
             print(f"[ERRORE] Durante l'importazione di {csv_file}: {e}")
         
-    print("\n All clear! Tutti i file disponibili sono stati inseriti nel Database.")
+    print("\n[INFO] Pipeline di caricamento terminata.")
 
 if __name__ == "__main__":
     main()
