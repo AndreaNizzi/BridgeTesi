@@ -28,7 +28,7 @@ def arricchisci_protocollo(proto_num: int) -> str:
 # =====================================================================
 
 @mcp.tool()
-def get_traffic_summary(ip_target: str, start_time: str, end_time: str, limit: str = "50", ragionamento_investigativo: str = "Analisi macroscopica strutturale dei flussi") -> str:
+def get_traffic_summary(ip_target: str, start_time: str, end_time: str, limit: str = "50") -> str:
     """
     Restituisce una snapshot globale dei flussi di rete analizzati da nDPI per l'host target
     e all'interno della finestra temporale indicata (Formato: YYYY-MM-DD HH:MM:SS).
@@ -39,8 +39,6 @@ def get_traffic_summary(ip_target: str, start_time: str, end_time: str, limit: s
         limit_int = int(limit)
     except ValueError:
         limit_int = 50
-
-    _ = ragionamento_investigativo
     
     if limit_int > 100:
         limit_int = 100
@@ -72,13 +70,12 @@ def get_traffic_summary(ip_target: str, start_time: str, end_time: str, limit: s
 
 
 @mcp.tool()
-def detect_beaconing(ip_target: str, start_time: str, end_time: str, ragionamento_investigativo: str= "Analisi dei pattern di beaconing e regolarità temporale") -> str:
+def detect_beaconing(ip_target: str, start_time: str, end_time: str) -> str:
     """
     Analizza i flussi in uscita dall'IP target alla ricerca di pattern periodici e ripetitivi
     tipici delle comunicazioni Command & Control (C2) e Botnet (Beaconing).
     Ritorna le destinazioni ordinate per regolarità temporale (bassa deviazione standard).
     """
-    _ = ragionamento_investigativo
     
     query = text("""
         WITH timed_flows AS (
@@ -145,12 +142,11 @@ def detect_beaconing(ip_target: str, start_time: str, end_time: str, ragionament
 # =====================================================================
 
 @mcp.tool()
-def get_rate_statistics(start_time: str, end_time: str, ragionamento_investigativo: str = "Calcolo della baseline statistica dei tassi di traffico") -> str:
+def get_rate_statistics(start_time: str, end_time: str) -> str:
     """
     Restituisce la baseline statistica della rete (Media e Deviazione Standard) dei tassi 
     di traffico all'interno di una finestra temporale circoscritta (Formato: YYYY-MM-DD HH:MM:SS).
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT 
@@ -171,12 +167,11 @@ def get_rate_statistics(start_time: str, end_time: str, ragionamento_investigati
         return f"[ERRORE TOOL]: Errore nel calcolo delle statistiche di baseline: {str(e)}"
 
 @mcp.tool()
-def query_by_rate(threshold: float, metric: str = "packet_rate", ragionamento_investigativo: str = "Identificazione anomalie volumetriche e potenziali attacchi DoS/DDoS") -> str:
+def query_by_rate(threshold: float, metric: str = "packet_rate") -> str:
     """
     Interroga i flussi che violano una soglia matematica (threshold) sulla metrica scelta 
     ('packet_rate' o 'byte_rate'). Consente l'identificazione di attacchi DDoS/DoS (Scenario B).
     """
-    _ = ragionamento_investigativo
 
     if metric not in ["packet_rate", "byte_rate"]:
         return "[ERRORE TOOL]: la metrica inserita deve essere 'packet_rate' o 'byte_rate'."
@@ -206,12 +201,11 @@ def query_by_rate(threshold: float, metric: str = "packet_rate", ragionamento_in
 # =====================================================================
 
 @mcp.tool()
-def get_top_talkers(start_time: str, end_time: str, top_n: int = 10, criterion: str = "bytes", ragionamento_investigativo: str = "Identificazione degli host dominanti per volume o frequenza") -> str:
+def get_top_talkers(start_time: str, end_time: str, top_n: int = 10, criterion: str = "bytes") -> str:
     """
     Identifica gli host che hanno dominato il traffico per volume ('bytes') o frequenza ('packets')
     esclusivamente all'interno dell'intervallo temporale specificato (Formato: YYYY-MM-DD HH:MM:SS).
     """
-    _ = ragionamento_investigativo
 
     if criterion not in ["bytes", "packets"]:
         return "[ERRORE TOOL]: il criterio deve essere 'bytes' o 'packets'."
@@ -238,12 +232,11 @@ def get_top_talkers(start_time: str, end_time: str, top_n: int = 10, criterion: 
         return f"[ERRORE TOOL]: Errore nel calcolo dei Top Talkers: {str(e)}"
 
 @mcp.tool()
-def analyze_dpi_details(ip: str, ragionamento_investigativo: str = "Ispezione profonda L7 dei metadati e cifratura TLS per l'host") -> str:
+def analyze_dpi_details(ip: str) -> str:
     """
     Esegue il drill-down profondo di livello 7 su un host specifico.
     Estrae metadati nDPI quali: ndpi_hostname, payload_entropy, infra_provider e cifratura TLS.
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT community_id, src_ip, dst_ip, dst_port, protocol, app_hierarchy, 
@@ -266,12 +259,11 @@ def analyze_dpi_details(ip: str, ragionamento_investigativo: str = "Ispezione pr
         return f"[ERRORE TOOL]: Errore nell'ispezione DPI di dettaglio: {str(e)}"
 
 @mcp.tool()
-def resolve_host_info(ip: str, ragionamento_investigativo: str = "Risoluzione metadati infrastrutturali e identificazione provider cloud") -> str:
+def resolve_host_info(ip: str) -> str:
     """
     Arricchisce il profilo dell'host tramite i metadati infrastrutturali raccolti da nDPI.
     Permette all'LLM di distinguere tra servizi cloud legittimi e domini generici.
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT DISTINCT ndpi_hostname, infra_provider
@@ -295,12 +287,11 @@ def resolve_host_info(ip: str, ragionamento_investigativo: str = "Risoluzione me
 # =====================================================================
 
 @mcp.tool()
-def search_connection_attempts(target_port: int, start_time: str, end_time: str, ragionamento_investigativo: str = "Isolamento pattern sequenziali ad alta frequenza (Brute Force / Scansioni)") -> str:
+def search_connection_attempts(target_port: int, start_time: str, end_time: str) -> str:
     """
     Isola i pattern sequenziali ad alta frequenza verso porte sensibili (Brute Force / Beaconing)
     avvenuti nell'intervallo temporale indicato (Formato: YYYY-MM-DD HH:MM:SS).
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT src_ip, dst_ip, dst_port, COUNT(*) as tentativi_totali, 
@@ -324,12 +315,11 @@ def search_connection_attempts(target_port: int, start_time: str, end_time: str,
         return f"[ERRORE TOOL]: Errore nell'analisi dei tentativi sequenziali: {str(e)}"
 
 @mcp.tool()
-def get_flow_features(ip: str, ragionamento_investigativo: str = "Estrazione feature statistiche temporali profonde (IAT) per temporal reasoning") -> str:
+def get_flow_features(ip: str) -> str:
     """
     Estrae le feature statistiche temporali profonde (come l'Inter-Arrival Time IAT) per un IP.
     Permette all'LLM di eseguire Temporal Reasoning su pattern ciclici costanti (es. Heartbeat Botnet).
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT community_id, dst_ip, dst_port, protocol, duration_ms, 
@@ -353,12 +343,11 @@ def get_flow_features(ip: str, ragionamento_investigativo: str = "Estrazione fea
 
 # Connettore per il drill-down trasversale 
 @mcp.tool()
-def analizza_connessione_by_community_id(cid: str, ragionamento_investigativo: str = "Drill-down granulare su singolo flusso logico tramite Community ID") -> str:
+def analizza_connessione_by_community_id(cid: str) -> str:
     """
     Esegue un'operazione di Drill-Down granulare estraendo i dettagli logici di un singolo 
     flusso a partire dal suo identificativo unico community_id.
     """
-    _ = ragionamento_investigativo
 
     query = text("""
         SELECT community_id, src_ip, src_port, dst_ip, dst_port, protocol, duration_ms,
