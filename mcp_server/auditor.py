@@ -16,44 +16,74 @@ engine = create_engine(f'mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}/{DB_NAME}
 OUTPUT_DIR = "outputs"
 
 def ripristina_formato_data(stringa_data):
-    """Convertiamo '20170703_101333' nel formato SQL '2017-07-03 10:13:33'."""
-    dt = datetime.strptime(stringa_data, "%Y%m%d_%H%M%S")
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+    """Converte '20170703_101333' nel formato SQL '2017-07-03 10:13:33'."""
+    try:
+        dt = datetime.strptime(stringa_data, "%Y%m%d_%H%M%S")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return stringa_data
 
 def estrai_dati_report(file_path):
-    """Estraiamo l'IP, i timestamp dal nome del file e il verdetto dal testo del report."""
+    """
+    Estrae IP, timestamp, categoria e verdetto gestendo vari formati di file
+    e ripiegando sul contenuto Markdown se necessario.
+    """
     nome_file = os.path.basename(file_path)
-    
-    match_nome = re.search(r"report_(.+)_(\d{8}_\d{6})_(\d{8}_\d{6})_cat_(.+)\.md", nome_file)
-    if not match_nome:
-        return None
-    
-    ip_target = match_nome.group(1)
-    start_raw = match_nome.group(2)
-    end_raw = match_nome.group(3)
-    categoria = match_nome.group(4)
     
     with open(file_path, "r", encoding="utf-8") as f:
         contenuto = f.read()
-        
-    # Cerchiamo la riga del verdetto (es: VERDETTO: TRAFFICO BENIGNO)
-    match_verdetto = re.search(r"VERDETTO:\s*(.+)", contenuto, re.IGNORECASE)
 
+    ip_target, start_time, end_time, categoria = None, None, None, None
+
+    match_doppio_ts = re.search(
+        r"report_(.+)_(\d{8}_\d{6})_(\d{8}_\d{6})(?:_gen_\d{8}_\d{6})?_(.+)\.md", 
+        nome_file, 
+        re.IGNORECASE
+    )
+
+    if match_doppio_ts:
+        ip_target = match_doppio_ts.group(1).replace("_", ".") 
+        start_time = ripristina_formato_data(match_doppio_ts.group(2))
+        end_time = ripristina_formato_data(match_doppio_ts.group(3))
+        categoria = match_doppio_ts.group(4)
+
+    if not ip_target:
+        match_ip = re.search(r"IP Target Analizzato:\s*([\d\.]+)", contenuto)
+        if match_ip:
+            ip_target = match_ip.group(1)
+
+    if not start_time or not end_time:
+        match_window = re.search(r"Finestra Temporale:\s*([\d\-\s:\.]+)\s*->\s*([\d\-\s:\.]+)", contenuto)
+        if match_window:
+            start_time = match_window.group(1).strip()
+            end_time = match_window.group(2).strip()
+        elif start_time and not end_time:
+            end_time = start_time
+
+    if not categoria:
+        match_cat = re.search(r"Categoria di Analisi:\s*(.+)", contenuto)
+        if match_cat:
+            categoria = match_cat.group(1).strip()
+
+    match_verdetto = re.search(r"VERDETTO:\s*(.+)", contenuto, re.IGNORECASE)
     if match_verdetto:
         verdetto_llm = match_verdetto.group(1).strip(" []_.")
     else:
         verdetto_llm = "NON TROVATO"
-    
+
+    if not ip_target or not start_time or not end_time:
+        return None
+
     return {
         "ip": ip_target,
-        "start_time": ripristina_formato_data(start_raw),  
-        "end_time": ripristina_formato_data(end_raw),      
-        "categoria": categoria,
+        "start_time": start_time,
+        "end_time": end_time,
+        "categoria": categoria or "N/D",
         "verdetto_llm": verdetto_llm
     }
 
 def controlla_ground_truth(ip_target, start_time, end_time):
-    """Interroghiamo il DB per vedere quante righe BENIGN o ATTACCO ci sono per quell'IP."""
+    """Interroga il DB per verificare la presenza di minacce reali."""
     query = text("""
         SELECT c.label, COUNT(*) as conteggio
         FROM ndpi_flows as n JOIN cic_flows as c ON n.community_id = c.community_id
@@ -70,7 +100,7 @@ def controlla_ground_truth(ip_target, start_time, end_time):
     return risultati_db
 
 def stampa_matrice_e_metriche(stats):
-    """Calcoliamo le metriche di performance e stampiamo la matrice di confusione."""
+    """Calcola le metriche di performance e stampa la matrice di confusione."""
     tp = stats["TP"]
     fp = stats["FP"]
     tn = stats["TN"]
@@ -120,10 +150,13 @@ def esegui_auditing():
     for f_path in file_reports:
         dati = estrai_dati_report(f_path)
         if not dati:
+            print(f"\n[ERRORE]: Impossibile estrarre metadati da {os.path.basename(f_path)}")
+            stats["NON_PARSABILE"] += 1
             continue
             
         print(f"\nAnalisi file: {os.path.basename(f_path)}")
         print(f"IP Target   : {dati['ip']} (Cat: {dati['categoria'].upper()})")
+        print(f"Finestra    : {dati['start_time']} -> {dati['end_time']}")
         print(f"Verdetto LLM: {dati['verdetto_llm']}")
         
         ground_truth = controlla_ground_truth(dati["ip"], dati["start_time"], dati["end_time"])
@@ -131,15 +164,17 @@ def esegui_auditing():
         
         ha_attacchi_reali = any(label != 'BENIGN' for label in ground_truth.keys())
         
+        verdetto_upper = dati["verdetto_llm"].upper()
+        
         print("ESITO AUDITING: ", end="")
-        if "BENIGNO" in dati["verdetto_llm"].upper():
+        if any(k in verdetto_upper for k in ["BENIGNO", "SICURO", "PULITO"]):
             if not ha_attacchi_reali:
                 print("TRUE NEGATIVE (TN) - L'LLM ha classificato correttamente il traffico sicuro.")
                 stats["TN"] += 1
             else:
                 print("FALSE NEGATIVE (FN) - L'LLM ha mancato una minaccia presente nel DB!")
                 stats["FN"] += 1
-        elif "MINACCIA" in dati["verdetto_llm"].upper():
+        elif any(k in verdetto_upper for k in ["MINACCIA", "MALIGNO", "ATTACCO", "ANOMALO", "SUSPICIOUS"]):
             if ha_attacchi_reali:
                 print("TRUE POSITIVE (TP) - L'LLM ha intercettato correttamente l'attacco!")
                 stats["TP"] += 1
