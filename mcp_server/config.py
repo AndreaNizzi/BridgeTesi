@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MAX_DRILLDOWN_TURNS = 10
-MIN_CHAR_LIMIT = 10  
+MIN_CHAR_LIMIT = 80  
 MAX_TENTATIVI_CORREZIONE = 3
 MAX_ERRORI_GLOBALI = 5
 MAX_RETRY_REPORT = 3
