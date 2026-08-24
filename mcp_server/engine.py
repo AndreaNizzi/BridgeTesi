@@ -28,7 +28,7 @@ def normalizza_parametri_tool(valore: Any) -> Any:
         ]
     return valore
 
-# 2 validate_and_process_turn, 1 esegui_analisi_mcp
+# 2 validate_and_process_turn, 1 esegui_analisi_mcp, 1 server
 def calcola_hash_chiamata(nome_funzione: str, argomenti: Dict[str, Any]) -> str:
     """
     Genera un hash SHA-256 unico e deterministico per una chiamata a un tool.
@@ -41,8 +41,9 @@ def calcola_hash_chiamata(nome_funzione: str, argomenti: Dict[str, Any]) -> str:
     # Serializzazione deterministica
     json_canonico = json.dumps(
         {"tool": nome_funzione, "args": argomenti_puliti},
-        sort_keys=True, # ordina TUTTE le chiavi (anche annidate)
-        ensure_ascii=True
+        sort_keys=True,
+        ensure_ascii=True,
+        default=str
     )
     
     return hashlib.sha256(json_canonico.encode('utf-8')).hexdigest()
